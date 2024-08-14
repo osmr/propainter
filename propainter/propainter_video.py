@@ -3,7 +3,7 @@
 """
 
 __all__ = ['ProPainterIterator', 'FrameIterator', 'MaskIterator', 'FilePathDirIterator',
-           'conv_propainter_frames_into_numpy']
+           'conv_propainter_frames_into_numpy', 'run_streaming_propainter', 'check_arrays']
 
 import os
 import cv2
@@ -239,41 +239,6 @@ class MaskIterator(FrameIterator):
         return masks
 
 
-def check_arrays(gt_arrays_dir_path,
-                 pref,
-                 tested_array,
-                 start_idx,
-                 end_idx,
-                 c_slice=slice(None),
-                 do_save=False,
-                 precise=True,
-                 atol: float = 1.0):
-    if do_save and (not os.path.exists(gt_arrays_dir_path)):
-        os.mkdir(gt_arrays_dir_path)
-
-    for j, i in enumerate(range(start_idx, end_idx)):
-        if isinstance(tested_array, torch.Tensor):
-            tested_array_i = tested_array[j, c_slice].cpu().detach().numpy()
-        else:
-            tested_array_i = tested_array[j]
-
-        tested_array_i_file_path = os.path.join(gt_arrays_dir_path, pref + "{:05d}.npy".format(i))
-        if do_save:
-            np.save(tested_array_i_file_path, np.ascontiguousarray(tested_array_i))
-            continue
-
-        gt_array_i = np.load(tested_array_i_file_path)
-
-        if precise:
-            if not np.array_equal(tested_array_i, gt_array_i):
-                print(f"{gt_arrays_dir_path}, {pref}, {tested_array}, {start_idx}, {end_idx}, {j}, {i}")
-            np.testing.assert_array_equal(tested_array_i, gt_array_i)
-        else:
-            if not np.allclose(tested_array_i, gt_array_i, rtol=0, atol=atol):
-                print(f"{gt_arrays_dir_path}, {pref}, {tested_array}, {start_idx}, {end_idx}, {j}, {i}")
-            np.testing.assert_allclose(tested_array_i, gt_array_i, rtol=0, atol=atol)
-
-
 def conv_propainter_frames_into_numpy(frames: torch.Tensor) -> np.ndarray:
     """
     Convert ProPainter output frames from torch to numpy format.
@@ -293,61 +258,20 @@ def conv_propainter_frames_into_numpy(frames: torch.Tensor) -> np.ndarray:
     return frames
 
 
-def run_streaming_propainter(frames_dir_path: str,
-                             masks_dir_path: str,
-                             image_resize_ratio: float,
-                             raft_model_path: str,
-                             pprfc_model_path: str,
-                             pp_model_path: str,
-                             mask_dilation: int = 4,
-                             raft_iters: int = 20) -> np.ndarray:
+def run_streaming_propainter(vi_iterator: ProPainterIterator) -> np.ndarray:
     """
     Run ProPainter in streaming mode.
 
     Parameters
     ----------
-    frames_dir_path : str
-        Frames directory path.
-    masks_dir_path : str
-        Masks directory path.
-    image_resize_ratio : float
-        Resize ratio.
-    raft_model_path : str
-        Path to RAFT model parameters.
-    pprfc_model_path : str
-        Path to ProPainter-RFC model parameters.
-    pp_model_path : str
-        Path to ProPainter model parameters.
-    use_cuda : bool, default True
-        Whether to use CUDA.
-    mask_dilation : int, default 4
-        Mask dilation.
-    raft_iters : int, default 20
-        Number of iterations in RAFT.
+    vi_iterator : ProPainterIterator
+        ProPainter iterator.
 
     Returns
     -------
     np.ndarray
         Resulted frames.
     """
-    frame_iterator = FrameIterator(
-        data=FilePathDirIterator(frames_dir_path),
-        image_resize_ratio=image_resize_ratio,
-        use_cuda=True)
-
-    mask_iterator = MaskIterator(
-        mask_dilation=mask_dilation,
-        data=FilePathDirIterator(masks_dir_path),
-        image_resize_ratio=image_resize_ratio,
-        use_cuda=True)
-
-    vi_iterator = ProPainterIterator(
-        frames=frame_iterator,
-        masks=mask_iterator,
-        raft_model_path=raft_model_path,
-        pprfc_model_path=pprfc_model_path,
-        pp_model_path=pp_model_path)
-
     vi_frames_np = None
     for frames_i in vi_iterator:
         frames_np_i = conv_propainter_frames_into_numpy(frames_i)
@@ -355,53 +279,80 @@ def run_streaming_propainter(frames_dir_path: str,
             vi_frames_np = frames_np_i
         else:
             vi_frames_np = np.concatenate([vi_frames_np, frames_np_i])
-
     return vi_frames_np
 
 
-def _test():
-    # root_path = "../../../pytorchcv_data/test0"
-    # image_resize_ratio = 1.0
-    # video_length = 80
+def check_arrays(gt_arrays_dir_path: str,
+                 pref: str,
+                 tested_array: torch.Tensor | np.ndarray,
+                 start_idx: int,
+                 end_idx: int,
+                 c_slice: slice = slice(None),
+                 do_save: bool = False,
+                 precise: bool = True,
+                 atol: float = 1.0,
+                 format: str = "npy"):
+    """
+    Check calculation precision by saved values.
 
-    root_path = "../../../pytorchcv_data/test1"
-    image_resize_ratio = 0.5
-    video_length = 287
+    Parameters
+    ----------
+    gt_arrays_dir_path : str
+        Directory path for saved values.
+    pref : str
+        Prefix for file name.
+    tested_array : torch.Tensor or np.ndarray
+        Tested array of values.
+    start_idx : int
+        Start index for test.
+    end_idx : int
+        End index for test.
+    c_slice : slice, default slice(None)
+        Slice value for the second dim.
+    do_save : bool, default False
+        Whether to save value instead to test.
+    precise : bool, default True
+        Whether to do precise testing.
+    atol : float, default 1.0
+        Absolute tolerance value.
+    format : str, default 'npy'
+        File extension (`npy` or `png`).
 
-    frames_dir_name = "_source_frames"
-    masks_dir_name = "_segmentation_masks"
-    frames_dir_path = os.path.join(root_path, frames_dir_name)
-    masks_dir_path = os.path.join(root_path, masks_dir_name)
+    Returns
+    -------
+    np.ndarray
+        Resulted numpy frames.
+    """
+    if do_save and (not os.path.exists(gt_arrays_dir_path)):
+        os.mkdir(gt_arrays_dir_path)
 
-    raft_model_path = "../../../pytorchcv_data/test/raft-things_2.pth"
-    pprfc_model_path = "../../../pytorchcv_data/test/propainter_rfc.pth"
-    pp_model_path = "../../../pytorchcv_data/test/propainter.pth"
+    for j, i in enumerate(range(start_idx, end_idx)):
+        if isinstance(tested_array, torch.Tensor):
+            tested_array_i = tested_array[j, c_slice].cpu().detach().numpy()
+        else:
+            tested_array_i = tested_array[j]
+        tested_array_i = np.ascontiguousarray(tested_array_i)
 
-    vi_frames = run_streaming_propainter(
-        frames_dir_path=frames_dir_path,
-        masks_dir_path=masks_dir_path,
-        image_resize_ratio=image_resize_ratio,
-        raft_model_path=raft_model_path,
-        pprfc_model_path=pprfc_model_path,
-        pp_model_path=pp_model_path)
+        tested_array_i_file_path = os.path.join(gt_arrays_dir_path, pref + "{:05d}.{}".format(i, format))
+        if do_save:
+            if format == "npy":
+                np.save(tested_array_i_file_path, tested_array_i)
+            else:
+                tested_array_i = cv2.cvtColor(tested_array_i, cv2.COLOR_BGR2RGB)
+                cv2.imwrite(tested_array_i_file_path, tested_array_i)
+            continue
 
-    video_length = len(vi_frames)
+        if format == "npy":
+            gt_array_i = np.load(tested_array_i_file_path)
+        else:
+            gt_array_i = cv2.imread(tested_array_i_file_path)
+            gt_array_i = cv2.cvtColor(gt_array_i, cv2.COLOR_BGR2RGB)
 
-    if True:
-        comp_frames_dir_path = os.path.join(root_path, "comp_frames")
-        check_arrays(
-            gt_arrays_dir_path=comp_frames_dir_path,
-            pref="comp_frame_",
-            tested_array=vi_frames,
-            start_idx=0,
-            end_idx=video_length,
-            # do_save=True,
-            precise=False,
-            # atol=8,
-        )
-
-    pass
-
-
-if __name__ == "__main__":
-    _test()
+        if precise:
+            if not np.array_equal(tested_array_i, gt_array_i):
+                print(f"{gt_arrays_dir_path}, {pref}, {tested_array}, {start_idx}, {end_idx}, {j}, {i}")
+            np.testing.assert_array_equal(tested_array_i, gt_array_i)
+        else:
+            if not np.allclose(tested_array_i, gt_array_i, rtol=0, atol=atol):
+                print(f"{gt_arrays_dir_path}, {pref}, {tested_array}, {start_idx}, {end_idx}, {j}, {i}")
+            np.testing.assert_allclose(tested_array_i, gt_array_i, rtol=0, atol=atol)
