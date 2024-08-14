@@ -7,9 +7,9 @@ from propainter.propainter_video import (ProPainterIterator, FilePathDirIterator
 
 
 def test_propainter_change_source():
-    raft_model_path = "../../pytorchcv_data/test/raft-things_2.pth"
-    pprfc_model_path = "../../pytorchcv_data/test/propainter_rfc.pth"
-    pp_model_path = "../../pytorchcv_data/test/propainter.pth"
+    raft_model_path = None
+    pprfc_model_path = None
+    pp_model_path = None
 
     image_resize_ratio = 1.0
     mask_dilation = 4

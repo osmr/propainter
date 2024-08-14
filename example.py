@@ -66,9 +66,9 @@ def main():
     mask_dilation = args.mask_dilation
     do_save = args.save
 
-    raft_model_path = "../pytorchcv_data/test/raft-things_2.pth"
-    pprfc_model_path = "../pytorchcv_data/test/propainter_rfc.pth"
-    pp_model_path = "../pytorchcv_data/test/propainter.pth"
+    raft_model_path = None
+    pprfc_model_path = None
+    pp_model_path = None
 
     frame_iterator = FrameIterator(
         data=FilePathDirIterator(frames_dir_path),
