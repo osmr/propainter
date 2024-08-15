@@ -24,7 +24,7 @@ setup(
         'Topic :: Scientific/Engineering :: Image Recognition',
     ],
     keywords='video-inpaining propainter pytorch',
-    packages=find_packages(exclude=['datasets', 'metrics', 'others', '*.others', 'others.*', '*.others.*']),
+    packages=find_packages(exclude=['*.others']),
     install_requires=['pytorchcv', 'opencv-python', 'pillow', 'scipy'],
     python_requires='>=3.10',
     include_package_data=True,

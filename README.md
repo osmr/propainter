@@ -1,11 +1,16 @@
 # Streaming Video Inpainting via ProPainter
 
-A package for using ProPainter  in streaming mode.
+A package for using ProPainter in streaming mode.
 
 ### Prerequisites
 python >= 3.10
 
-### Deployment
+### Deployment 
+```
+pip install propainter
+```
+
+### Deployment for testing from repo
 1. Install prerequisites:
 ```
 sudo apt-get update
@@ -27,9 +32,8 @@ source venv/bin/activate
 ```
 pip install --upgrade pip setuptools wheel
 ```
-5. Install packages:
+5. Install package:
 ```
-pip install git+ssh://git@github.com:osmr/pytorchcv.git
 pip install -e .
 ```
 6. Optionally install pytest:
