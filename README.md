@@ -1,6 +1,6 @@
 # Streaming Video Inpainting via ProPainter
 
-A package for using ProPainter in streaming mode.
+A package for using ProPainter in streaming mode (e.g. for a very long video).
 
 ### Prerequisites
 python >= 3.10
