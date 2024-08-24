@@ -2,8 +2,8 @@
     Video inpainting calculator based on ProPainter.
 """
 
-__all__ = ['ProPainterIterator', 'FrameIterator', 'MaskIterator', 'FilePathDirIterator',
-           'conv_propainter_frames_into_numpy', 'run_streaming_propainter', 'check_arrays']
+__all__ = ['ScaledProPainterIterator', 'RawFrameSequencer', 'RawMaskSequencer', 'FilePathDirSequencer',
+           'run_streaming_propainter']
 
 import os
 import cv2
@@ -12,14 +12,143 @@ import scipy.ndimage
 import numpy as np
 import torch
 from typing import Sequence
-from enum import IntEnum
-from pytorchcv.models.common.steam import BufferedIterator
+from pytorchcv.models.common.steam import Sequencer, BufferedSequencer
 from pytorchcv.models.propainter_stream import ProPainterIterator
 
 
-class FilePathDirIterator(object):
+class PillowImageRescaler:
     """
-    Iterator for file paths in directory.
+    Pillow image rescaler.
+
+    Parameters
+    ----------
+    image_resize_ratio : float
+        Resize ratio.
+    """
+    def __init__(self,
+                 image_resize_ratio: float):
+        super(PillowImageRescaler, self).__init__()
+        assert (image_resize_ratio > 0.0)
+        self.image_resize_ratio = image_resize_ratio
+
+        self.image_raw_size = None
+        self.image_scaled_size = None
+        self.do_scale = False
+
+    def check_image_scale(self,
+                          image: np.ndarray):
+        """
+        Check image scale.
+
+        Parameters
+        ----------
+        image : np.ndarray
+            Source image.
+        """
+        if self.image_raw_size is None:
+            height, width = image.shape[:2]
+            self.image_raw_size = (width, height)
+            self.image_scaled_size = (int(self.image_resize_ratio * self.image_raw_size[0]),
+                                      int(self.image_resize_ratio * self.image_raw_size[1]))
+            self.image_scaled_size = (self.image_scaled_size[0] - self.image_scaled_size[0] % 8,
+                                      self.image_scaled_size[1] - self.image_scaled_size[1] % 8)
+            if self.image_raw_size != self.image_scaled_size:
+                self.do_scale = True
+
+    def __call__(self,
+                 image: np.ndarray,
+                 is_mask: bool) -> np.ndarray:
+        """
+        Rescale image.
+
+        Parameters
+        ----------
+        image : np.ndarray
+            Source image.
+        is_mask : bool
+            Whether to interpret processed image as a mask.
+
+        Returns
+        -------
+        np.ndarray
+            Target image.
+        """
+        self.check_image_scale(image)
+        if self.do_scale:
+            assert (not is_mask) or (len(image.shape) == 2)
+            image = Image.fromarray(image)
+            image = image.resize(
+                size=self.image_scaled_size,
+                resample=(Image.Resampling.NEAREST if is_mask else Image.Resampling.BICUBIC))
+            image = np.array(image)
+        return image
+
+    def invert(self,
+               image: np.ndarray) -> np.ndarray:
+        """
+        Invert rescale image.
+
+        Parameters
+        ----------
+        image : np.ndarray
+            Source image.
+
+        Returns
+        -------
+        np.ndarray
+            Target image.
+        """
+        if self.do_scale:
+            assert (len(image.shape) == 3)
+            image = Image.fromarray(image)
+            image = image.resize(
+                size=self.image_raw_size,
+                resample=Image.Resampling.BICUBIC)
+            image = np.array(image)
+        return image
+
+
+class ScipyMaskDilator:
+    """
+    Scipy binary mask dilator.
+
+    Parameters
+    ----------
+    dilation : int
+        Mask dilation.
+    """
+    def __init__(self,
+                 dilation: int):
+        super(ScipyMaskDilator, self).__init__()
+        assert (dilation >= 0)
+        self.dilation = dilation
+
+    def __call__(self,
+                 mask: np.ndarray) -> np.ndarray:
+        """
+        Dilate mask.
+
+        Parameters
+        ----------
+        mask : np.ndarray
+            Source mask.
+
+        Returns
+        -------
+        np.ndarray
+            Target mask (binary image).
+        """
+        if self.dilation > 0:
+            mask = scipy.ndimage.binary_dilation(input=mask, iterations=self.dilation).astype(np.uint8)
+        else:
+            assert (mask.dtype == np.uint8)
+            assert (np.max(mask).item() <= 1)
+        return mask
+
+
+class FilePathDirSequencer(object):
+    """
+    Sequencer for file paths in directory.
 
     Parameters
     ----------
@@ -28,7 +157,7 @@ class FilePathDirIterator(object):
     """
     def __init__(self,
                  dir_path: str):
-        super(FilePathDirIterator, self).__init__()
+        super(FilePathDirSequencer, self).__init__()
         assert os.path.exists(dir_path)
 
         self.dir_path = dir_path
@@ -48,80 +177,41 @@ class FilePathDirIterator(object):
             raise ValueError()
 
 
-class FrameIterator(BufferedIterator):
+class RawFrameSequencer(BufferedSequencer):
     """
-    Frame buffered iterator.
-
-    Parameters
-    ----------
-    image_resize_ratio : float
-        Resize ratio.
-    use_cuda : bool
-        Whether to use CUDA.
+    Numpy raw frame buffered sequencer.
     """
     def __init__(self,
-                 image_resize_ratio: float,
-                 use_cuda: bool,
                  **kwargs):
-        super(FrameIterator, self).__init__(**kwargs)
-        assert (image_resize_ratio > 0.0)
-        self.image_resize_ratio = image_resize_ratio
-        self.use_cuda = use_cuda
-
-        self.image_scaled_size = None
-        self.do_scale = False
-
-    def _rescale_image(self,
-                       image: Image,
-                       resample: IntEnum | None = None) -> Image:
-        """
-        Rescale frame.
-
-        Parameters
-        ----------
-        image : Image
-            Frame.
-        resample : IntEnum or None, default None
-            PIL resample mode.
-
-        Returns
-        -------
-        Image
-            Image.
-        """
-        if self.image_scaled_size is None:
-            image_raw_size = image.size
-            self.image_scaled_size = (int(self.image_resize_ratio * image_raw_size[0]),
-                                      int(self.image_resize_ratio * image_raw_size[1]))
-            self.image_scaled_size = (self.image_scaled_size[0] - self.image_scaled_size[0] % 8,
-                                      self.image_scaled_size[1] - self.image_scaled_size[1] % 8)
-            if image_raw_size != self.image_scaled_size:
-                self.do_scale = True
-        if self.do_scale:
-            image = image.resize(
-                size=self.image_scaled_size,
-                resample=resample)
-        return image
+        super(RawFrameSequencer, self).__init__(**kwargs)
 
     def load_frame(self,
-                   frame_path: str) -> Image:
+                   image_path: str) -> np.ndarray:
         """
         Load frame from file.
 
         Parameters
         ----------
-        frame_path : str
+        image_path : str
             Path to frame file.
 
         Returns
         -------
-        Image
-            Frame.
+        np.ndarray
+            Loaded frame.
         """
-        frame = cv2.imread(frame_path)
-        frame = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        frame = self._rescale_image(image=frame)
-        return frame
+        image = cv2.imread(
+            filename=image_path,
+            flags=cv2.IMREAD_UNCHANGED)
+        assert (len(image.shape) == 3)
+        assert (image.shape[2] == 3)
+
+        image = cv2.cvtColor(
+            src=image,
+            code=cv2.COLOR_BGR2RGB)
+
+        assert (image.dtype == np.uint8)
+        return image
 
     def _calc_data_items(self,
                          raw_data_chunk_list: tuple[Sequence, ...] | list[Sequence] | Sequence) -> Sequence:
@@ -139,9 +229,137 @@ class FrameIterator(BufferedIterator):
             Resulted data.
         """
         assert (len(raw_data_chunk_list) == 1)
+        frames = np.array([self.load_frame(x) for x in raw_data_chunk_list[0]])
+        return frames
 
-        frame_list = [self.load_frame(x) for x in raw_data_chunk_list[0]]
-        frames = np.stack(frame_list)
+    def _expand_buffer_by(self,
+                          data_chunk: Sequence):
+        """
+        Expand buffer by extra data.
+
+        Parameters
+        ----------
+        data_chunk : sequence
+            Data chunk.
+        """
+        self.buffer = np.concatenate([self.buffer, data_chunk])
+
+
+class RawMaskSequencer(BufferedSequencer):
+    """
+    Numpy raw mask buffered sequencer.
+
+    Parameters
+    ----------
+    pre_raw_mask_dilation : int, default 0
+        Mask dilation.
+    """
+    def __init__(self,
+                 pre_raw_mask_dilation: int = 0,
+                 **kwargs):
+        super(RawMaskSequencer, self).__init__(**kwargs)
+        self.pre_raw_dilator = ScipyMaskDilator(dilation=pre_raw_mask_dilation)
+
+    def load_mask(self,
+                  image_path: str) -> np.ndarray:
+        """
+        Load mask from file.
+
+        Parameters
+        ----------
+        image_path : str
+            Path to mask file.
+
+        Returns
+        -------
+        np.ndarray
+            Loaded mask.
+        """
+        image = cv2.imread(
+            filename=image_path,
+            flags=cv2.IMREAD_UNCHANGED)
+        assert (len(image.shape) == 2)
+
+        image = (image > 0).astype(np.uint8)
+        assert (np.max(image).item() <= 1)
+
+        image = self.pre_raw_dilator(image)
+
+        assert (image.dtype == np.uint8)
+        return image
+
+    def _calc_data_items(self,
+                         raw_data_chunk_list: tuple[Sequence, ...] | list[Sequence] | Sequence) -> Sequence:
+        """
+        Calculate/load data items.
+
+        Parameters
+        ----------
+        raw_data_chunk_list : tuple(sequence, ...) or list(sequence) or sequence
+            List of source data chunks.
+
+        Returns
+        -------
+        sequence
+            Resulted data.
+        """
+        assert (len(raw_data_chunk_list) == 1)
+        masks = np.array([self.load_mask(x) for x in raw_data_chunk_list[0]])
+        return masks
+
+    def _expand_buffer_by(self,
+                          data_chunk: Sequence):
+        """
+        Expand buffer by extra data.
+
+        Parameters
+        ----------
+        data_chunk : sequence
+            Data chunk.
+        """
+        self.buffer = np.concatenate([self.buffer, data_chunk])
+
+
+class FrameSequencer(BufferedSequencer):
+    """
+    Frame buffered sequencer.
+
+    Parameters
+    ----------
+    image_resize_ratio : float
+        Resize ratio.
+    use_cuda : bool, default True
+        Whether to use CUDA.
+    """
+    def __init__(self,
+                 image_resize_ratio: float,
+                 use_cuda: bool = True,
+                 **kwargs):
+        super(FrameSequencer, self).__init__(**kwargs)
+        self.rescaler = PillowImageRescaler(image_resize_ratio=image_resize_ratio)
+        self.use_cuda = use_cuda
+
+    def _calc_data_items(self,
+                         raw_data_chunk_list: tuple[Sequence, ...] | list[Sequence] | Sequence) -> Sequence:
+        """
+        Calculate/load data items.
+
+        Parameters
+        ----------
+        raw_data_chunk_list : tuple(sequence, ...) or list(sequence) or sequence
+            List of source data chunks.
+
+        Returns
+        -------
+        sequence
+            Resulted data.
+        """
+        assert (len(raw_data_chunk_list) == 1)
+        frames = raw_data_chunk_list[0]
+        assert (len(frames.shape) == 4) and ((frames.shape[-1] == 3))
+
+        frames = np.array([self.rescaler(x, is_mask=False) for x in frames])
+
         frames = torch.from_numpy(frames).permute(0, 3, 1, 2).contiguous()
         frames = frames.float()
         frames = frames.div(255.0)
@@ -165,49 +383,29 @@ class FrameIterator(BufferedIterator):
         self.buffer = torch.cat([self.buffer, data_chunk])
 
 
-class MaskIterator(FrameIterator):
+class MaskSequencer(BufferedSequencer):
     """
-    Mask buffered iterator.
+    Binary mask buffered sequencer.
 
     Parameters
     ----------
-    mask_dilation : int
-        Mask dilation.
     image_resize_ratio : float
         Resize ratio.
-    use_cuda : bool
+    mask_dilation : int
+        Mask dilation.
+    use_cuda : bool, default True
         Whether to use CUDA.
     """
     def __init__(self,
+                 image_resize_ratio: float,
                  mask_dilation: int,
+                 use_cuda: bool = True,
                  **kwargs):
-        super(MaskIterator, self).__init__(**kwargs)
-        self.mask_dilation = mask_dilation
-        assert (self.mask_dilation > 0)
-
-    def load_mask(self,
-                  mask_path: str) -> Image:
-        """
-        Load mask from file.
-
-        Parameters
-        ----------
-        mask_path : str
-            Path to mask file.
-
-        Returns
-        -------
-        Image
-            Mask.
-        """
-        mask = Image.open(mask_path)
-        mask = self._rescale_image(image=mask, resample=Image.NEAREST)
-        mask = np.array(mask.convert("L"))
-
-        mask = scipy.ndimage.binary_dilation(input=mask, iterations=self.mask_dilation).astype(np.uint8)
-        mask = Image.fromarray(mask * 255)
-
-        return mask
+        super(MaskSequencer, self).__init__(**kwargs)
+        assert (mask_dilation > 0)
+        self.rescaler = PillowImageRescaler(image_resize_ratio=image_resize_ratio)
+        self.dilator = ScipyMaskDilator(dilation=mask_dilation)
+        self.use_cuda = use_cuda
 
     def _calc_data_items(self,
                          raw_data_chunk_list: tuple[Sequence, ...] | list[Sequence] | Sequence) -> Sequence:
@@ -225,134 +423,182 @@ class MaskIterator(FrameIterator):
             Resulted data.
         """
         assert (len(raw_data_chunk_list) == 1)
+        masks = raw_data_chunk_list[0]
+        assert (len(masks.shape) == 3)
 
-        mask_list = [self.load_mask(x) for x in raw_data_chunk_list[0]]
-        masks = np.stack(mask_list)
+        masks = np.array([self.dilator(self.rescaler(x, is_mask=True)) for x in masks])
+
         masks = np.expand_dims(masks, axis=-1)
         masks = torch.from_numpy(masks).permute(0, 3, 1, 2).contiguous()
         masks = masks.float()
-        masks = masks.div(255.0)
 
         if self.use_cuda:
             masks = masks.cuda()
 
         return masks
 
+    def _expand_buffer_by(self,
+                          data_chunk: Sequence):
+        """
+        Expand buffer by extra data.
 
-def conv_propainter_frames_into_numpy(frames: torch.Tensor) -> np.ndarray:
+        Parameters
+        ----------
+        data_chunk : sequence
+            Data chunk.
+        """
+        self.buffer = torch.cat([self.buffer, data_chunk])
+
+
+class ProPainterSIMSequencer(Sequencer):
     """
-    Convert ProPainter output frames from torch to numpy format.
+    Scaled Inpaint Masking (ProPainter-SIM) sequencer.
 
     Parameters
     ----------
-    frames : torch.Tensor
-        ProPainter output frames in torch format.
-
-    Returns
-    -------
-    np.ndarray
-        Resulted numpy frames.
+    inp_frames : Sequence
+        Inpaint masking sequencer (ProPainter-IM).
+    raw_frames : RawFrameSequencer
+        Numpy frame sequencer.
+    raw_masks : RawMaskSequencer
+        Numpy mask sequencer.
+    post_raw_mask_dilation : int, default 0
+        Post raw mask dilation.
     """
-    frames = (((frames + 1.0) / 2.0) * 255).to(torch.uint8)
-    frames = frames.permute(0, 2, 3, 1).cpu().detach().numpy()
-    return frames
+    def __init__(self,
+                 inp_frames: Sequence,
+                 raw_frames: RawFrameSequencer,
+                 raw_masks: RawMaskSequencer,
+                 rescaler: PillowImageRescaler,
+                 post_raw_mask_dilation: int = 0):
+        assert (len(raw_frames) > 0)
+        super(ProPainterSIMSequencer, self).__init__(data=[inp_frames, raw_frames, raw_masks])
+        self.rescaler = rescaler
+        self.post_raw_dilator = ScipyMaskDilator(dilation=post_raw_mask_dilation)
+
+    def _calc_data_items(self,
+                         raw_data_chunk_list: tuple[Sequence, ...] | list[Sequence] | Sequence) -> Sequence:
+        """
+        Calculate/load data items.
+
+        Parameters
+        ----------
+        raw_data_chunk_list : tuple(sequence, ...) or list(sequence) or sequence
+            List of source data chunks.
+
+        Returns
+        -------
+        sequence
+            Resulted data.
+        """
+        assert (len(raw_data_chunk_list) == 3)
+
+        inp_frames = raw_data_chunk_list[0]
+        raw_frames = raw_data_chunk_list[1]
+        raw_masks = raw_data_chunk_list[2]
+
+        assert isinstance(inp_frames, torch.Tensor)
+        assert isinstance(raw_frames, np.ndarray)
+        assert isinstance(raw_masks, np.ndarray)
+
+        inp_frames_np = ProPainterSIMSequencer.conv_propainter_frames_into_numpy(inp_frames)
+
+        do_masking = (self.post_raw_dilator.dilation > 0)
+
+        if self.rescaler.do_scale:
+            assert (inp_frames_np.shape != raw_frames.shape)
+            inp_frames_np = np.array([self.rescaler.invert(x) for x in inp_frames_np])
+            do_masking = True
+
+        if do_masking:
+            dilated_raw_masks = np.array([self.post_raw_dilator(x) for x in raw_masks])
+            dilated_raw_masks = np.expand_dims(dilated_raw_masks, axis=-1)
+            inp_frames_np = inp_frames_np * dilated_raw_masks + raw_frames * (1 - dilated_raw_masks)
+
+        return inp_frames_np
+
+    @staticmethod
+    def conv_propainter_frames_into_numpy(frames: torch.Tensor) -> np.ndarray:
+        """
+        Convert ProPainter output frames from torch to numpy format.
+
+        Parameters
+        ----------
+        frames : torch.Tensor
+            ProPainter output frames in torch format.
+
+        Returns
+        -------
+        np.ndarray
+            Resulted numpy frames.
+        """
+        frames = (((frames + 1.0) / 2.0) * 255).to(torch.uint8)
+        frames = frames.permute(0, 2, 3, 1).cpu().detach().numpy()
+        return frames
 
 
-def run_streaming_propainter(vi_iterator: ProPainterIterator) -> np.ndarray:
+class ScaledProPainterIterator(ProPainterIterator):
     """
-    Run ProPainter in streaming mode.
+    Video Inpainting (ProPainter) iterator for scaled frames.
 
     Parameters
     ----------
-    vi_iterator : ProPainterIterator
-        ProPainter iterator.
+    raw_frames : RawFrameSequencer
+        Raw frame sequencer.
+    raw_masks : RawMaskSequencer
+        Raw mask sequencer.
+    image_resize_ratio : float
+        Resize ratio.
+    mask_dilation : int
+        Mask dilation.
+    post_raw_mask_dilation : int, default 0
+        Post raw mask dilation.
+    """
+    def __init__(self,
+                 raw_frames: RawFrameSequencer,
+                 raw_masks: RawMaskSequencer,
+                 image_resize_ratio: float,
+                 mask_dilation: int,
+                 post_raw_mask_dilation: int = 0,
+                 **kwargs):
+        frames = FrameSequencer(
+            data=raw_frames,
+            image_resize_ratio=image_resize_ratio)
+        masks = MaskSequencer(
+            data=raw_masks,
+            image_resize_ratio=image_resize_ratio,
+            mask_dilation=mask_dilation)
+        super(ScaledProPainterIterator, self).__init__(
+            frames=frames,
+            masks=masks,
+            **kwargs)
+        self.sclaed_inp_frame_sequencer = ProPainterSIMSequencer(
+            inp_frames=self.inp_frame_sequencer,
+            raw_frames=raw_frames,
+            raw_masks=raw_masks,
+            rescaler=frames.rescaler,
+            post_raw_mask_dilation=post_raw_mask_dilation)
+        self.main_sequencer = self.sclaed_inp_frame_sequencer
+
+
+def run_streaming_propainter(vi_iterator: ScaledProPainterIterator) -> np.ndarray:
+    """
+    Run scaled ProPainter in streaming mode on the entire data sequence.
+
+    Parameters
+    ----------
+    vi_iterator : ScaledProPainterIterator
+        Scaled ProPainter iterator.
 
     Returns
     -------
     np.ndarray
         Resulted frames.
     """
-    vi_frames_np = None
+    vi_frames = None
     for frames_i in vi_iterator:
-        frames_np_i = conv_propainter_frames_into_numpy(frames_i)
-        if vi_frames_np is None:
-            vi_frames_np = frames_np_i
+        if vi_frames is None:
+            vi_frames = frames_i
         else:
-            vi_frames_np = np.concatenate([vi_frames_np, frames_np_i])
-    return vi_frames_np
-
-
-def check_arrays(gt_arrays_dir_path: str,
-                 pref: str,
-                 tested_array: torch.Tensor | np.ndarray,
-                 start_idx: int,
-                 end_idx: int,
-                 c_slice: slice = slice(None),
-                 do_save: bool = False,
-                 precise: bool = True,
-                 atol: float = 1.0,
-                 format: str = "npy"):
-    """
-    Check calculation precision by saved values.
-
-    Parameters
-    ----------
-    gt_arrays_dir_path : str
-        Directory path for saved values.
-    pref : str
-        Prefix for file name.
-    tested_array : torch.Tensor or np.ndarray
-        Tested array of values.
-    start_idx : int
-        Start index for test.
-    end_idx : int
-        End index for test.
-    c_slice : slice, default slice(None)
-        Slice value for the second dim.
-    do_save : bool, default False
-        Whether to save value instead to test.
-    precise : bool, default True
-        Whether to do precise testing.
-    atol : float, default 1.0
-        Absolute tolerance value.
-    format : str, default 'npy'
-        File extension (`npy` or `png`).
-
-    Returns
-    -------
-    np.ndarray
-        Resulted numpy frames.
-    """
-    if do_save and (not os.path.exists(gt_arrays_dir_path)):
-        os.mkdir(gt_arrays_dir_path)
-
-    for j, i in enumerate(range(start_idx, end_idx)):
-        if isinstance(tested_array, torch.Tensor):
-            tested_array_i = tested_array[j, c_slice].cpu().detach().numpy()
-        else:
-            tested_array_i = tested_array[j]
-        tested_array_i = np.ascontiguousarray(tested_array_i)
-
-        tested_array_i_file_path = os.path.join(gt_arrays_dir_path, pref + "{:05d}.{}".format(i, format))
-        if do_save:
-            if format == "npy":
-                np.save(tested_array_i_file_path, tested_array_i)
-            else:
-                tested_array_i = cv2.cvtColor(tested_array_i, cv2.COLOR_BGR2RGB)
-                cv2.imwrite(tested_array_i_file_path, tested_array_i)
-            continue
-
-        if format == "npy":
-            gt_array_i = np.load(tested_array_i_file_path)
-        else:
-            gt_array_i = cv2.imread(tested_array_i_file_path)
-            gt_array_i = cv2.cvtColor(gt_array_i, cv2.COLOR_BGR2RGB)
-
-        if precise:
-            if not np.array_equal(tested_array_i, gt_array_i):
-                print(f"{gt_arrays_dir_path}, {pref}, {tested_array}, {start_idx}, {end_idx}, {j}, {i}")
-            np.testing.assert_array_equal(tested_array_i, gt_array_i)
-        else:
-            if not np.allclose(tested_array_i, gt_array_i, rtol=0, atol=atol):
-                print(f"{gt_arrays_dir_path}, {pref}, {tested_array}, {start_idx}, {end_idx}, {j}, {i}")
-            np.testing.assert_allclose(tested_array_i, gt_array_i, rtol=0, atol=atol)
+            vi_frames = np.concatenate([vi_frames, frames_i])
+    return vi_frames

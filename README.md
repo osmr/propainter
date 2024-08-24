@@ -13,7 +13,6 @@ pip install propainter
 ### Deployment for testing from repo
 1. Install prerequisites:
 ```
-sudo apt-get update
 sudo apt-get update && sudo apt-get upgrade -y && sudo apt-get autoremove
 ```
 2. Install virtualenv (actual [instructions](https://virtualenv.pypa.io/en/latest/installation.html)):
@@ -46,3 +45,7 @@ pip install pytest
 1. Investigate the `example.py` script.
 2. Investigate pytest scripts in `tests` directory.
 
+### Using the `example.py` script for your data: 
+```
+python exapmple.py --frames=<frame_dir> --masks=<mask_dir> --output=<output_dir> --resize_ratio=1.0 --save
+```

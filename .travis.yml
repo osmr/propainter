@@ -13,7 +13,7 @@ install:
     #- pip install -r requirements.txt
     - pip install flake8  # pytest  # add another testing frameworks later
 before_script:
-    - flake8 . --count --ignore=W504 --max-line-length=127 --show-source --statistics --exclude=./venv
+    - flake8 . --count --max-line-length=127 --show-source --statistics --exclude=./venv
 script:
     - true  # pytest --capture=sys  # add others tests here
 notifications:

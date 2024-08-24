@@ -4,8 +4,9 @@
 
 import argparse
 import numpy as np
-from propainter.propainter_video import (ProPainterIterator, FrameIterator, MaskIterator, FilePathDirIterator,
-                                         conv_propainter_frames_into_numpy, check_arrays)
+from propainter.propainter_video import (FilePathDirSequencer, RawFrameSequencer, RawMaskSequencer,
+                                         ScaledProPainterIterator)
+from tests.common import check_arrays
 
 
 def parse_args() -> argparse.Namespace:
@@ -44,7 +45,17 @@ def parse_args() -> argparse.Namespace:
         "--mask_dilation",
         type=int,
         default=4,
-        help="mask dilation for input masks")
+        help="mask dilation for processed masks")
+    parser.add_argument(
+        "--pre_raw_mask_dilation",
+        type=int,
+        default=0,
+        help="mask dilation for input masks in original resolution (before all calculations)")
+    parser.add_argument(
+        "--post_raw_mask_dilation",
+        type=int,
+        default=0,
+        help="mask dilation for input masks in original resolution (extra dilation)")
     parser.add_argument(
         "--save",
         action="store_true",
@@ -64,46 +75,40 @@ def main():
     output_dir_path = args.output
     image_resize_ratio = args.resize_ratio
     mask_dilation = args.mask_dilation
+    pre_raw_mask_dilation = args.pre_raw_mask_dilation
+    post_raw_mask_dilation = args.post_raw_mask_dilation
     do_save = args.save
 
-    raft_model_path = None
-    pprfc_model_path = None
-    pp_model_path = None
+    frame_file_sequencer = FilePathDirSequencer(dir_path=frames_dir_path)
+    mask_file_sequencer = FilePathDirSequencer(dir_path=masks_dir_path)
 
-    frame_iterator = FrameIterator(
-        data=FilePathDirIterator(frames_dir_path),
+    raw_frame_sequencer = RawFrameSequencer(data=frame_file_sequencer)
+    raw_mask_sequencer = RawMaskSequencer(
+        data=mask_file_sequencer,
+        pre_raw_mask_dilation=pre_raw_mask_dilation)
+
+    vi_iterator = ScaledProPainterIterator(
+        raw_frames=raw_frame_sequencer,
+        raw_masks=raw_mask_sequencer,
         image_resize_ratio=image_resize_ratio,
-        use_cuda=True)
-
-    mask_iterator = MaskIterator(
         mask_dilation=mask_dilation,
-        data=FilePathDirIterator(masks_dir_path),
-        image_resize_ratio=image_resize_ratio,
-        use_cuda=True)
+        post_raw_mask_dilation=post_raw_mask_dilation)
 
-    vi_iterator = ProPainterIterator(
-        frames=frame_iterator,
-        masks=mask_iterator,
-        raft_model=raft_model_path,
-        pprfc_model=pprfc_model_path,
-        pp_model=pp_model_path)
-
-    vi_frames_np = None
+    vi_frames = None
     for frames_i in vi_iterator:
-        frames_np_i = conv_propainter_frames_into_numpy(frames_i)
-        if vi_frames_np is None:
-            vi_frames_np = frames_np_i
+        if vi_frames is None:
+            vi_frames = frames_i
         else:
-            vi_frames_np = np.concatenate([vi_frames_np, frames_np_i])
+            vi_frames = np.concatenate([vi_frames, frames_i])
 
     check_arrays(
         gt_arrays_dir_path=output_dir_path,
         pref="vi_frame_",
-        tested_array=vi_frames_np,
+        tested_array=vi_frames,
         start_idx=0,
-        end_idx=len(vi_frames_np),
+        end_idx=len(vi_frames),
         do_save=do_save,
-        format="png")
+        file_format="png")
 
 
 if __name__ == "__main__":
