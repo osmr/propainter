@@ -44,7 +44,7 @@ pip install pytest
 
 1. Investigate the `example.py` script.
 2. Investigate pytest scripts in `tests` directory.
-3. Using the `example.py` script for your data: 
+3. Launch the `example.py` script on your data: 
 ```
-python exapmple.py --frames=<frame_dir> --masks=<mask_dir> --output=<output_dir> --resize_ratio=1.0 --save
+python example.py --frames=<frame_dir> --masks=<mask_dir> --output=<output_dir> --resize_ratio=1.0 --save
 ```
