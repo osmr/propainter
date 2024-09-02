@@ -2,6 +2,7 @@
     Testing ProPainter on long sequence.
 """
 
+import os
 from propainter.propainter_video import (FilePathDirSequencer, RawFrameSequencer, RawMaskSequencer,
                                          ScaledProPainterIterator, run_streaming_propainter)
 # from common import check_arrays
@@ -11,9 +12,10 @@ def test_propainter_long(factor: int = 20):
     image_resize_ratio = 1.0
     mask_dilation = 4
 
-    frames_dir_path = "data/bmx-trees"
-    masks_dir_path = "data/bmx-trees_mask"
-    # result_dir_path = "data/bmx-trees_result"
+    root_dir_path = os.path.dirname(__file__)
+    frames_dir_path = os.path.join(root_dir_path, "data/bmx-trees")
+    masks_dir_path = os.path.join(root_dir_path, "data/bmx-trees_mask")
+    # result_dir_path = os.path.join(root_dir_path, "data/bmx-trees_result")
 
     frame_file_sequencer = FilePathDirSequencer(dir_path=frames_dir_path)
     mask_file_sequencer = FilePathDirSequencer(dir_path=masks_dir_path)
