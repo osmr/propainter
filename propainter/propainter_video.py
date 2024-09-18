@@ -12,7 +12,7 @@ import scipy.ndimage
 import numpy as np
 import torch
 from typing import Sequence
-from pytorchcv.models.common.steam import Sequencer, BufferedSequencer
+from pytorchcv.models.common.stream import Sequencer, BufferedSequencer
 from pytorchcv.models.propainter_stream import ProPainterIterator
 
 
