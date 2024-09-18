@@ -1,6 +1,6 @@
 # Streaming Video Inpainting via ProPainter
 
-A package for using ProPainter in streaming mode (e.g. for a very long video).
+A package for using [ProPainter](https://arxiv.org/pdf/2309.03897) in streaming mode (e.g. for a very long video).
 
 ### Prerequisites
 python >= 3.10
@@ -41,10 +41,15 @@ pip install pytest
 ```
 
 ### Usage
-
 1. Investigate the `example.py` script.
 2. Investigate pytest scripts in `tests` directory.
 3. Launch the `example.py` script on your data: 
 ```
 python example.py --frames=<frame_dir> --masks=<mask_dir> --output=<output_dir> --resize_ratio=1.0 --save
 ```
+
+### License
+Please note that ProPainter is subject to a non-commercial [S-Lab license](https://github.com/sczhou/ProPainter/blob/main/LICENSE).
+
+### Acknowledgement
+This code is based on [ProPainter](https://github.com/sczhou/ProPainter). Thanks for this awesome work.
